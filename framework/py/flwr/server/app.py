@@ -37,6 +37,8 @@ from flwr.common.constant import (
     AUTHZ_TYPE_YAML_KEY,
     CONTROL_API_DEFAULT_SERVER_ADDRESS,
     FLEET_API_GRPC_RERE_DEFAULT_ADDRESS,
+    FLEET_API_MQTT_DEFAULT_ADDRESS,
+    FLEET_API_MQTT_TLS_DEFAULT_ADDRESS,
     FLEET_API_REST_DEFAULT_ADDRESS,
     ISOLATION_MODE_PROCESS,
     ISOLATION_MODE_SUBPROCESS,
@@ -44,6 +46,7 @@ from flwr.common.constant import (
     SIMULATIONIO_API_DEFAULT_SERVER_ADDRESS,
     TRANSPORT_TYPE_GRPC_ADAPTER,
     TRANSPORT_TYPE_GRPC_RERE,
+    TRANSPORT_TYPE_MQTT,
     TRANSPORT_TYPE_REST,
     AuthnType,
     AuthzType,
@@ -356,6 +359,12 @@ def run_superlink() -> None:
                 args.fleet_api_address = FLEET_API_GRPC_RERE_DEFAULT_ADDRESS
             elif args.fleet_api_type == TRANSPORT_TYPE_REST:
                 args.fleet_api_address = FLEET_API_REST_DEFAULT_ADDRESS
+            elif args.fleet_api_type == TRANSPORT_TYPE_MQTT:
+                mqtt_ca = getattr(args, "mqtt_ca_certfile", None)
+                if mqtt_ca:
+                    args.fleet_api_address = FLEET_API_MQTT_TLS_DEFAULT_ADDRESS
+                else:
+                    args.fleet_api_address = FLEET_API_MQTT_DEFAULT_ADDRESS
 
         fleet_address, host, port = _format_address(args.fleet_api_address)
 
@@ -423,6 +432,46 @@ def run_superlink() -> None:
                 certificates=certificates,
             )
             grpc_servers.append(fleet_server)
+        elif args.fleet_api_type == TRANSPORT_TYPE_MQTT:
+            try:
+                from .superlink.fleet.mqtt.mqtt_fleet_api import (  # pylint: disable=C0415
+                    run_fleet_api_mqtt,
+                )
+            except ImportError:
+                flwr_exit(
+                    ExitCode.COMMON_MISSING_EXTRA_REST,
+                    "MQTT transport requires paho-mqtt. "
+                    "Install with: pip install 'paho-mqtt>=2.0.0'",
+                )
+
+            # Build MQTT TLS config from CLI args
+            mqtt_ca = getattr(args, "mqtt_ca_certfile", None)
+            mqtt_tls = None
+            if mqtt_ca:
+                mqtt_tls = (
+                    mqtt_ca,
+                    getattr(args, "mqtt_certfile", None),
+                    getattr(args, "mqtt_keyfile", None),
+                )
+            shared_group = getattr(args, "mqtt_shared_group", None)
+
+            fleet_thread = threading.Thread(
+                target=run_fleet_api_mqtt,
+                args=(
+                    host,
+                    port,
+                    state_factory,
+                    ffs_factory,
+                    objectstore_factory,
+                ),
+                kwargs={
+                    "mqtt_tls": mqtt_tls,
+                    "shared_group": shared_group,
+                },
+                daemon=True,
+            )
+            fleet_thread.start()
+            bckg_threads.append(fleet_thread)
         else:
             raise ValueError(f"Unknown fleet_api_type: {args.fleet_api_type}")
 
@@ -800,18 +849,48 @@ def _add_args_fleet_api(parser: argparse.ArgumentParser) -> None:
             TRANSPORT_TYPE_GRPC_RERE,
             TRANSPORT_TYPE_GRPC_ADAPTER,
             TRANSPORT_TYPE_REST,
+            TRANSPORT_TYPE_MQTT,
         ],
-        help="Start a gRPC-rere or REST (experimental) Fleet API server.",
+        help="Start a gRPC-rere, REST (experimental), or MQTT Fleet API server.",
     )
     parser.add_argument(
         "--fleet-api-address",
-        help="Fleet API server address (IPv4, IPv6, or a domain name).",
+        help="Fleet API server address (IPv4, IPv6, or a domain name). "
+        "For MQTT, this is the MQTT broker address (default: 0.0.0.0:1883).",
     )
     parser.add_argument(
         "--fleet-api-num-workers",
         default=1,
         type=int,
         help="Set the number of concurrent workers for the Fleet API server.",
+    )
+    # MQTT-specific arguments
+    parser.add_argument(
+        "--mqtt-ca-certfile",
+        type=str,
+        default=None,
+        help="CA certificate file for MQTT TLS. Enables encrypted communication "
+        "with the MQTT broker. When set, the default port changes to 8883.",
+    )
+    parser.add_argument(
+        "--mqtt-certfile",
+        type=str,
+        default=None,
+        help="Client certificate file for MQTT mutual TLS.",
+    )
+    parser.add_argument(
+        "--mqtt-keyfile",
+        type=str,
+        default=None,
+        help="Client private key file for MQTT mutual TLS.",
+    )
+    parser.add_argument(
+        "--mqtt-shared-group",
+        type=str,
+        default=None,
+        help="MQTT 5.0 shared subscription group name. When set, multiple "
+        "SuperLink instances can subscribe to the same topics and the broker "
+        "distributes messages across them for horizontal scaling.",
     )
 
 

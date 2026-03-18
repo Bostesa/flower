@@ -1,0 +1,61 @@
+# FlowerMQ: Federated Learning over MQTT 5.0
+#
+# Usage:
+#   docker compose up --build          # run full experiment
+#   docker compose up --build --scale supernode=5   # 5 nodes
+#
+# The runner service waits for nodes to register, then runs
+# quickstart-pytorch (FedAvg, 3 rounds) and prints results.
+
+services:
+  broker:
+    image: eclipse-mosquitto:2
+    volumes:
+      - ./docker/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    ports:
+      - "1883:1883"
+
+  superlink:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: >
+      bash -c "
+        sleep 3 &&
+        flower-superlink --insecure
+          --fleet-api-type mqtt
+          --fleet-api-address broker:1883
+      "
+    depends_on:
+      - broker
+
+  supernode:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: >
+      bash -c "
+        sleep 8 &&
+        flower-supernode --insecure --mqtt
+          --superlink broker:1883
+          --clientappio-api-address 0.0.0.0:9094
+          --node-config \"partition-id=$$((RANDOM % 100)) num-partitions=100\"
+      "
+    depends_on:
+      - superlink
+    deploy:
+      replicas: 2
+
+  runner:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: >
+      bash -c "
+        echo 'Waiting for SuperNodes to register...' &&
+        sleep 20 &&
+        cd /app/examples/quickstart-pytorch &&
+        flwr run . --stream
+      "
+    depends_on:
+      - supernode

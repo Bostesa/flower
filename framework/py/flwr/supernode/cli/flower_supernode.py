@@ -35,6 +35,7 @@ from flwr.common.constant import (
     ISOLATION_MODE_SUBPROCESS,
     TRANSPORT_TYPE_GRPC_ADAPTER,
     TRANSPORT_TYPE_GRPC_RERE,
+    TRANSPORT_TYPE_MQTT,
     TRANSPORT_TYPE_REST,
 )
 from flwr.common.exit import ExitCode, flwr_exit
@@ -67,6 +68,16 @@ def flower_supernode() -> None:
 
     log(DEBUG, "Isolation mode: %s", args.isolation)
 
+    # Build MQTT TLS config from CLI args
+    mqtt_tls = None
+    mqtt_ca = getattr(args, "mqtt_ca_certfile", None)
+    if mqtt_ca:
+        mqtt_tls = (
+            mqtt_ca,
+            getattr(args, "mqtt_certfile", None),
+            getattr(args, "mqtt_keyfile", None),
+        )
+
     start_client_internal(
         server_address=args.superlink,
         transport=args.transport,
@@ -82,6 +93,7 @@ def flower_supernode() -> None:
         clientappio_api_address=args.clientappio_api_address,
         health_server_address=args.health_server_address,
         trusted_entities=trusted_entities,
+        mqtt_tls=mqtt_tls,
     )
 
 
@@ -163,6 +175,13 @@ def _parse_args_common(parser: argparse.ArgumentParser) -> None:
         const=TRANSPORT_TYPE_REST,
         help="Use REST as a transport layer for the client.",
     )
+    ex_group.add_argument(
+        "--mqtt",
+        action="store_const",
+        dest="transport",
+        const=TRANSPORT_TYPE_MQTT,
+        help="Use MQTT as a transport layer for the client.",
+    )
     parser.add_argument(
         "--root-certificates",
         metavar="ROOT_CERT",
@@ -175,7 +194,9 @@ def _parse_args_common(parser: argparse.ArgumentParser) -> None:
         default=FLEET_API_GRPC_RERE_DEFAULT_ADDRESS,
         help="SuperLink Fleet API address (IPv4, IPv6, or a domain name). If using the "
         "REST (experimental) transport, ensure your address is in the form "
-        "`http://...` or `https://...` when TLS is enabled.",
+        "`http://...` or `https://...` when TLS is enabled. "
+        "If using the MQTT transport, provide the MQTT broker address "
+        "(e.g. `localhost:1883`).",
     )
     parser.add_argument(
         "--max-retries",
@@ -209,6 +230,26 @@ def _parse_args_common(parser: argparse.ArgumentParser) -> None:
         help="A space separated list of key/value pairs (separated by `=`) to "
         "configure the SuperNode. "
         "E.g. --node-config 'key1=\"value1\" partition-id=0 num-partitions=100'",
+    )
+    # MQTT-specific arguments
+    parser.add_argument(
+        "--mqtt-ca-certfile",
+        type=str,
+        default=None,
+        help="CA certificate file for MQTT TLS. Enables encrypted communication "
+        "with the MQTT broker.",
+    )
+    parser.add_argument(
+        "--mqtt-certfile",
+        type=str,
+        default=None,
+        help="Client certificate file for MQTT mutual TLS.",
+    )
+    parser.add_argument(
+        "--mqtt-keyfile",
+        type=str,
+        default=None,
+        help="Client private key file for MQTT mutual TLS.",
     )
 
 

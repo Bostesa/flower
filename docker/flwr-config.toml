@@ -1,0 +1,6 @@
+[superlink]
+default = "docker"
+
+[superlink.docker]
+address = "superlink:9093"
+insecure = true

@@ -41,6 +41,7 @@ from flwr.common.constant import (
     ISOLATION_MODE_SUBPROCESS,
     TRANSPORT_TYPE_GRPC_ADAPTER,
     TRANSPORT_TYPE_GRPC_RERE,
+    TRANSPORT_TYPE_MQTT,
     TRANSPORT_TYPE_REST,
     TRANSPORT_TYPES,
     ErrorCode,
@@ -102,6 +103,7 @@ def start_client_internal(
     clientappio_api_address: str = CLIENTAPPIO_API_DEFAULT_SERVER_ADDRESS,
     health_server_address: str | None = None,
     trusted_entities: dict[str, str] | None = None,
+    mqtt_tls: tuple[str, str | None, str | None] | None = None,
 ) -> None:
     """Start a Flower client node which connects to a Flower server.
 
@@ -225,6 +227,7 @@ def start_client_internal(
         authentication_keys=authentication_keys,
         max_retries=max_retries,
         max_wait_time=max_wait_time,
+        mqtt_tls=mqtt_tls,
     ) as conn:
         (
             node_id,
@@ -537,6 +540,7 @@ def _init_connection(  # pylint: disable=too-many-positional-arguments
     ) = None,
     max_retries: int | None = None,
     max_wait_time: float | None = None,
+    mqtt_tls: tuple[str, str | None, str | None] | None = None,
 ) -> Iterator[
     tuple[
         int,
@@ -575,6 +579,19 @@ def _init_connection(  # pylint: disable=too-many-positional-arguments
         connection, error_type = grpc_request_response, RpcError
     elif transport == TRANSPORT_TYPE_GRPC_ADAPTER:
         connection, error_type = grpc_adapter, RpcError
+    elif transport == TRANSPORT_TYPE_MQTT:
+        try:
+            from flwr.client.mqtt_client.connection import (  # pylint: disable=C0415
+                MqttRpcError,
+                mqtt_request_response,
+            )
+        except ImportError:
+            flwr_exit(
+                ExitCode.COMMON_MISSING_EXTRA_REST,
+                "MQTT transport requires paho-mqtt>=2.0.0. "
+                "Install with: pip install 'paho-mqtt>=2.0.0'",
+            )
+        connection, error_type = mqtt_request_response, MqttRpcError
     else:
         raise ValueError(
             f"Unknown transport type: {transport} (possible: {TRANSPORT_TYPES})"
@@ -588,6 +605,10 @@ def _init_connection(  # pylint: disable=too-many-positional-arguments
     )
 
     # Establish connection
+    conn_kwargs: dict = {}
+    if transport == TRANSPORT_TYPE_MQTT and mqtt_tls is not None:
+        conn_kwargs["mqtt_tls"] = mqtt_tls
+
     with connection(
         address,
         insecure,
@@ -595,6 +616,7 @@ def _init_connection(  # pylint: disable=too-many-positional-arguments
         GRPC_MAX_MESSAGE_LENGTH,
         root_certificates,
         authentication_keys,
+        **conn_kwargs,
     ) as conn:
         yield conn
 
