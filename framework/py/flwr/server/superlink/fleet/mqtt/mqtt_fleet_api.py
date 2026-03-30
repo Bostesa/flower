@@ -167,7 +167,9 @@ class MqttFleetApiServer:
             self.broker_port,
         )
         try:
-            self._client.connect(self.broker_address, self.broker_port)
+            self._client.connect(
+                self.broker_address, self.broker_port, keepalive=300
+            )
         except (ConnectionRefusedError, OSError) as e:
             log(
                 ERROR,

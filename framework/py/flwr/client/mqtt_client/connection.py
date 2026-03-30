@@ -138,7 +138,9 @@ class _MqttConnection:
             self._client.tls_set(ca_certs=ca, certfile=cert, keyfile=key)
 
         try:
-            self._client.connect(self._broker_address, self._broker_port)
+            self._client.connect(
+                self._broker_address, self._broker_port, keepalive=300
+            )
         except (ConnectionRefusedError, OSError) as e:
             raise MqttRpcError(
                 f"Cannot connect to MQTT broker at "
