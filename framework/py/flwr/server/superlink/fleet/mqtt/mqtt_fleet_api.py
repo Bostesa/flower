@@ -15,8 +15,10 @@
 """Fleet API server using MQTT 5.0 request-response pattern."""
 
 
+import threading
 import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from logging import DEBUG, ERROR, INFO, WARN
 
 import paho.mqtt.client as mqtt
@@ -121,6 +123,8 @@ class MqttFleetApiServer:
         self.mqtt_tls = mqtt_tls  # (ca_certfile, certfile, keyfile)
         self.shared_group = shared_group  # MQTT 5.0 shared subscription group
         self._client: mqtt.Client | None = None
+        self._executor: ThreadPoolExecutor | None = None
+        self._stop_event = threading.Event()
 
         # Map method names to handler functions
         self._handlers: dict[str, Callable[[bytes], bytes]] = {
@@ -182,11 +186,24 @@ class MqttFleetApiServer:
                 self.broker_port,
             )
             return
-        self._client.loop_forever()
+        # Thread pool for concurrent handler dispatch.  The previous
+        # single-threaded design serialised every RPC in ``_on_message``,
+        # which delayed heartbeat responses under burst load and caused
+        # nodes to be marked offline.  Using ``loop_start()`` (dedicated
+        # network-I/O thread) + ThreadPoolExecutor ensures outgoing
+        # responses are flushed immediately, even while handlers are busy.
+        self._executor = ThreadPoolExecutor(max_workers=32)
+        self._client.loop_start()
+        # Block until stop() is called (this runs in a daemon thread)
+        self._stop_event.wait()
 
     def stop(self) -> None:
         """Stop the MQTT Fleet API server."""
+        self._stop_event.set()
+        if self._executor is not None:
+            self._executor.shutdown(wait=False)
         if self._client is not None:
+            self._client.loop_stop()
             self._client.disconnect()
 
     # pylint: disable=unused-argument
@@ -248,7 +265,11 @@ class MqttFleetApiServer:
         userdata: object,  # pylint: disable=unused-argument
         msg: mqtt.MQTTMessage,
     ) -> None:
-        """Route incoming messages to the appropriate handler."""
+        """Route incoming messages to the appropriate handler.
+
+        Dispatches to a thread pool and returns immediately so the paho
+        network thread can continue flushing outgoing responses.
+        """
         # Extract method name from topic (flower/fleet/{method_name})
         parts = msg.topic.split("/")
         if len(parts) != 3:
@@ -272,9 +293,31 @@ class MqttFleetApiServer:
         # Determine response QoS based on the method
         qos = METHOD_QOS.get(method_name, QOS_CONTROL)
 
-        # Dispatch to handler
+        # Dispatch to thread pool — return immediately so the network
+        # thread can flush queued outgoing responses between messages.
+        if self._executor is not None:
+            self._executor.submit(
+                self._dispatch_handler,
+                handler,
+                msg.payload,
+                response_topic,
+                correlation_data,
+                qos,
+                method_name,
+            )
+
+    def _dispatch_handler(
+        self,
+        handler: Callable[[bytes], bytes],
+        payload: bytes,
+        response_topic: str,
+        correlation_data: bytes | None,
+        qos: int,
+        method_name: str,
+    ) -> None:
+        """Run a handler in a worker thread and publish the response."""
         try:
-            response_bytes = handler(msg.payload)
+            response_bytes = handler(payload)
             self._publish_response(
                 response_topic, correlation_data, STATUS_OK, response_bytes, qos
             )
